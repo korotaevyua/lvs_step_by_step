@@ -66,5 +66,3 @@ Possible next steps: input/config fingerprints, structured status output, tool-v
 ## Publishing
 
 Keep private configs, inputs, PDKs, logs and results outside tracked files. `.gitignore` covers common patterns, but review the staged file list before publishing. The original project-specific script is retained locally under ignored `.local-backup/` and must not be added to Git.
-
-No open-source license has been selected yet. Add the license chosen by the repository owner before advertising reuse terms.
