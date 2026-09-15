@@ -1,2 +1,2 @@
 # .shellcheckrc
-shellcheck --severity=error
+shellcheck --enable=all
