@@ -1,7 +1,11 @@
+# .github/workflows/tests.yml
 name: Runner tests
+
 on: [push, pull_request]
+
 permissions:
   contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -11,3 +15,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tcsh
       - name: Test orchestration with fake tools
         run: python3 -m unittest discover -s tests -v
+
+  lint-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          find . -name "*.sh" | xargs shellcheck --severity=error
