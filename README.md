@@ -1,3 +1,5 @@
+[![Tests](https://github.com/korotaevyua/lvs_step_by_step/actions/workflows/tests.yml/badge.svg)](https://github.com/korotaevyua/lvs_step_by_step/actions/workflows/tests.yml)
+
 # LVS step by step
 
 Configurable C-shell runner for a Siemens Calibre LVS flow: Verilog-to-CDL conversion with `v2lvs`, layout extraction, and comparison. Project paths, top cell, supply pins and tool options live in a separate local configuration.
