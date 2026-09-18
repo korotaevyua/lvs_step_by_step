@@ -16,10 +16,32 @@ jobs:
       - name: Test orchestration with fake tools
         run: python3 -m unittest discover -s tests -v
 
-  lint-shell:
+  lint-shell-bash:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: ShellCheck
+      - name: ShellCheck (bash/sh/dash/ksh only)
         run: |
-          find . -name "*.sh" | xargs shellcheck --severity=error
+          SH_FILES=$(find . -name "*.sh" -type f ! -name "run_lvs.sh")
+          if [ -n "$SH_FILES" ]; then
+            echo "$SH_FILES" | xargs shellcheck --severity=error
+          else
+            echo "No supported .sh files found, skipping ShellCheck"
+          fi
+
+  lint-shell-csh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install C-shell
+        run: sudo apt-get update && sudo apt-get install -y tcsh
+      - name: Check C-shell syntax
+        run: |
+          CSH_FILES=$(find . -name "*.sh" -type f -exec grep -l "^#!/bin/csh" {} \;)
+          if [ -n "$CSH_FILES" ]; then
+            for file in $CSH_FILES; do
+              tcsh -n "$file"
+            done
+          else
+            echo "No C-shell scripts found, skipping tcsh syntax check"
+          fi
