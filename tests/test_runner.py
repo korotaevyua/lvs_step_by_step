@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-RUNNER = Path(__file__).resolve().parents[1] / 'run_lvs'
+RUNNER = Path(__file__).resolve().parents[1] / 'run_lvs.sh'
 
 @unittest.skipUnless(shutil.which('csh'), 'C-shell required')
 class RunnerTests(unittest.TestCase):
