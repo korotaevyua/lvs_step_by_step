@@ -14,3 +14,6 @@ set HCELL = ""
 # Adjust pins/options for your library and installed tool version.
 set V2LVS_ARGS = ( -addpin VDD -addpin VSS )
 set CALIBRE_ARGS = ( -hier -hyper -turbo )
+# Extraction may return nonzero after writing SPICE (e.g. missing SOURCE rules).
+# Default: warn and compare a fresh nonempty netlist. Set 1 to require exit code 0.
+set EXTRACTION_REQUIRE_ZERO_EXIT = 0

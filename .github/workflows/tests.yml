@@ -1,5 +1,4 @@
-# .github/workflows/tests.yml
-name: Runner tests
+name: Runner checks
 
 on: [push, pull_request]
 
@@ -7,41 +6,20 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  checks:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install C-shell
-        run: sudo apt-get update && sudo apt-get install -y tcsh
-      - name: Test orchestration with fake tools
-        run: python3 -m unittest discover -s tests -v
-
-  lint-shell-bash:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: ShellCheck (bash/sh/dash/ksh only)
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.2'
+          cache: false
+      - name: Install shell check tools
         run: |
-          SH_FILES=$(find . -name "*.sh" -type f ! -name "run_lvs.sh")
-          if [ -n "$SH_FILES" ]; then
-            echo "$SH_FILES" | xargs shellcheck --severity=error
-          else
-            echo "No supported .sh files found, skipping ShellCheck"
-          fi
-
-  lint-shell-csh:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install C-shell
-        run: sudo apt-get update && sudo apt-get install -y tcsh
-      - name: Check C-shell syntax
-        run: |
-          CSH_FILES=$(find . -name "*.sh" -type f -exec grep -l "^#!/bin/csh" {} \;)
-          if [ -n "$CSH_FILES" ]; then
-            for file in $CSH_FILES; do
-              tcsh -n "$file"
-            done
-          else
-            echo "No C-shell scripts found, skipping tcsh syntax check"
-          fi
+          sudo apt-get update
+          sudo apt-get install -y tcsh shellcheck
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.11.0
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Syntax, lint, formatting, workflow checks and tests
+        run: ./scripts/check.sh

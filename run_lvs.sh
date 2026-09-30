@@ -9,41 +9,35 @@
 #   ./run_lvs v2cdl_compare - rerun v2cdl and compare using old layout spice
 #   ./run_lvs extraction_compare  rerun extraction and compare using old source spice
 
-# Configuration is trusted executable C-shell. Paths must be absolute.
+# Parse CLI before sourcing configuration or looking for proprietary tools.
+if ( $#argv > 0 ) then
+    set REQUEST = "$argv[1]"
+    switch ( "$REQUEST" )
+        case help:
+        case --help:
+        case -h:
+            echo "Usage: $0 [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
+            echo ""
+            echo "  full                Convert Verilog, extract layout, then compare (default)."
+            echo "  compare             Compare previously generated source and layout SPICE."
+            echo "  v2cdl_compare       Regenerate source SPICE, reuse layout, then compare."
+            echo "  extraction_compare  Regenerate layout SPICE, reuse source, then compare."
+            echo "  help, --help, -h    Show this help without loading config or running tools."
+            echo ""
+            echo "Copy config.example.csh to config.local.csh and edit absolute paths."
+            echo "The optional config argument selects another trusted C-shell config."
+            echo "Full runs archive previous results with a UTC date/time in the name."
+            echo "Inspect stage log files and the final Calibre report for the LVS verdict."
+            exit 0
+    endsw
+endif
 set CONFIG = "$cwd/config.local.csh"
 if ( $#argv > 2 ) then
     echo "Usage: $0 [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
     exit 2
 endif
 if ( $#argv == 2 ) set CONFIG = "$argv[2]"
-set TOP = ""
-set verilog = ""
-setenv GDS ""
-set V2LVS_SRC = ""
-set EXTR_RULE = ""
-set COMP_RULE = ""
-set SETUP_ENV = ""
-set STEP_DIR = "$cwd/runs/lvs"
-set USE_HCELL = 0
-set HCELL = ""
-set V2LVS_ARGS = ()
-set CALIBRE_ARGS = ( -hier -hyper -turbo )
-if ( ! -f "$CONFIG" ) then
-    echo "ERROR: missing $CONFIG; copy and edit config.example.csh"
-    exit 1
-endif
-source "$CONFIG"
-if ( $status != 0 ) exit 1
-if ( "$TOP" == "" || "$TOP" =~ */* || "$TOP" == "." || "$TOP" == ".." ) then
-    echo "ERROR: TOP must be a nonempty cell name without slashes"
-    exit 1
-endif
-if ( "$STEP_DIR" !~ /* || "$STEP_DIR" == "/" || "$STEP_DIR" =~ */ || "$STEP_DIR" =~ */../* || "$STEP_DIR" =~ */.. || "$STEP_DIR" =~ */./* || "$STEP_DIR" =~ */. ) then
-    echo "ERROR: STEP_DIR must be an absolute dedicated run directory without dot components or a trailing slash"
-    exit 1
-endif
 
-# =========================
 set MODE = full
 if ( $#argv > 0 ) then
     set MODE = "$argv[1]"
@@ -76,9 +70,42 @@ switch ( "$MODE" )
 
     default:
         echo "Usage: $0 [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
-        exit 1
+        exit 2
         breaksw
 endsw
+
+set TOP = ""
+set verilog = ""
+setenv GDS ""
+set V2LVS_SRC = ""
+set EXTR_RULE = ""
+set COMP_RULE = ""
+set SETUP_ENV = ""
+set STEP_DIR = "$cwd/runs/lvs"
+set EXTRACTION_REQUIRE_ZERO_EXIT = 0
+set USE_HCELL = 0
+set HCELL = ""
+set V2LVS_ARGS = ()
+set CALIBRE_ARGS = ( -hier -hyper -turbo )
+if ( ! -f "$CONFIG" ) then
+    echo "ERROR: missing $CONFIG; copy and edit config.example.csh"
+    exit 1
+endif
+source "$CONFIG"
+if ( $status != 0 ) exit 1
+if ( "$TOP" == "" || "$TOP" =~ */* || "$TOP" == "." || "$TOP" == ".." ) then
+    echo "ERROR: TOP must be a nonempty cell name without slashes"
+    exit 1
+endif
+if ( "$STEP_DIR" !~ /* || "$STEP_DIR" == "/" || "$STEP_DIR" =~ */ || "$STEP_DIR" =~ */../* || "$STEP_DIR" =~ */.. || "$STEP_DIR" =~ */./* || "$STEP_DIR" =~ */. ) then
+    echo "ERROR: STEP_DIR must be an absolute dedicated run directory without dot components or a trailing slash"
+    exit 1
+endif
+
+if ( "$EXTRACTION_REQUIRE_ZERO_EXIT" != "0" && "$EXTRACTION_REQUIRE_ZERO_EXIT" != "1" ) then
+    echo "ERROR: EXTRACTION_REQUIRE_ZERO_EXIT must be 0 or 1"
+    exit 1
+endif
 
 set REQUIRED = ( "$COMP_RULE" )
 if ( $RUN_V2CDL ) set REQUIRED = ( $REQUIRED:q "$verilog" "$V2LVS_SRC" )
@@ -118,7 +145,17 @@ endif
 onintr failed
 if ( "$MODE" == "full" ) then
     if ( -e "$STEP_DIR" ) then
-        set ARCHIVE = `mktemp -d "${STEP_DIR}.archive.XXXXXXXX"`
+        set ARCHIVE_TIME = `date -u "+%Y%m%dT%H%M%SZ"`
+        if ( $status != 0 ) goto failed
+        set ARCHIVE_BASE = "${STEP_DIR}.archive.${ARCHIVE_TIME}"
+        set ARCHIVE = "$ARCHIVE_BASE"
+        set ARCHIVE_INDEX = 0
+        # The run lock serializes archive creation; suffixes handle the same second.
+        while ( -e "$ARCHIVE" || -l "$ARCHIVE" )
+            @ ARCHIVE_INDEX ++
+            set ARCHIVE = "${ARCHIVE_BASE}.${ARCHIVE_INDEX}"
+        end
+        mkdir "$ARCHIVE"
         if ( $status != 0 ) goto failed
         mv "$STEP_DIR" "$ARCHIVE/run"
         if ( $status != 0 ) goto failed
@@ -197,8 +234,22 @@ if ( $RUN_EXTR ) then
     if ( $status != 0 ) goto failed
 
     calibre -lvs $CALIBRE_ARGS:q -spice "$LAYOUT_SPICE" "$EXTR_RULE" >& log
+    set EXTR_STATUS = $status
+    echo "exit_code=$EXTR_STATUS" >> timing
     if ( $status != 0 ) goto failed
-    if ( ! -s "$LAYOUT_SPICE" ) goto failed
+    # The previous netlist was removed before this invocation. Never accept stale output.
+    if ( ! -f "$LAYOUT_SPICE" || ! -r "$LAYOUT_SPICE" || ! -s "$LAYOUT_SPICE" ) then
+        echo "ERROR: extraction did not produce a new readable nonempty SPICE file"
+        goto failed
+    endif
+    if ( $EXTR_STATUS != 0 ) then
+        if ( $EXTRACTION_REQUIRE_ZERO_EXIT ) then
+            echo "ERROR: extraction exited with code $EXTR_STATUS (strict mode)"
+            goto failed
+        endif
+        echo "WARNING: extraction exited with code $EXTR_STATUS but produced $LAYOUT_SPICE"
+        echo "WARNING: continuing to compare; inspect extraction/log for errors and netlist completeness"
+    endif
 
     set end_time = `date "+%Y-%m-%d %H:%M:%S"`
     echo "end=$end_time" >> timing
@@ -237,11 +288,11 @@ if ( $RUN_COMP ) then
     if ( $status != 0 ) goto failed
 
     if ( $USE_HCELL ) then
-    calibre -lvs $CALIBRE_ARGS:q -hcell "$HCELL" "$COMP_RULE" >& log
-    if ( $status != 0 ) goto failed
+        calibre -lvs $CALIBRE_ARGS:q -hcell "$HCELL" "$COMP_RULE" >& log
+        if ( $status != 0 ) goto failed
     else
-    calibre -lvs $CALIBRE_ARGS:q "$COMP_RULE" >& log
-    if ( $status != 0 ) goto failed
+        calibre -lvs $CALIBRE_ARGS:q "$COMP_RULE" >& log
+        if ( $status != 0 ) goto failed
     endif
     set end_time = `date "+%Y-%m-%d %H:%M:%S"`
     echo "end=$end_time" >> timing

@@ -1,2 +1,3 @@
-# .shellcheckrc
-shellcheck --enable=all
+# This is a key=value configuration file, not a shell command.
+# Include style suggestions as well as warnings and errors (the default threshold).
+severity=style
