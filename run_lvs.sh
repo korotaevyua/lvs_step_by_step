@@ -1,46 +1,63 @@
 #!/bin/csh -f
+# Run with -h for modes, options and configuration instructions.
 
-
-# Usage:
-#   copy config.example.csh to config.local.csh and edit it, then run:
-#
-#   ./run_lvs
-#   ./run_lvs compare - rerun compare stage only using old layout/source spice
-#   ./run_lvs v2cdl_compare - rerun v2cdl and compare using old layout spice
-#   ./run_lvs extraction_compare  rerun extraction and compare using old source spice
-
-# Parse CLI before sourcing configuration or looking for proprietary tools.
-if ( $#argv > 0 ) then
-    set REQUEST = "$argv[1]"
-    switch ( "$REQUEST" )
-        case help:
-        case --help:
-        case -h:
-            echo "Usage: $0 [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
-            echo ""
-            echo "  full                Convert Verilog, extract layout, then compare (default)."
-            echo "  compare             Compare previously generated source and layout SPICE."
-            echo "  v2cdl_compare       Regenerate source SPICE, reuse layout, then compare."
-            echo "  extraction_compare  Regenerate layout SPICE, reuse source, then compare."
-            echo "  help, --help, -h    Show this help without loading config or running tools."
-            echo ""
-            echo "Copy config.example.csh to config.local.csh and edit absolute paths."
-            echo "The optional config argument selects another trusted C-shell config."
-            echo "Full runs archive previous results with a UTC date/time in the name."
-            echo "Inspect stage log files and the final Calibre report for the LVS verdict."
-            exit 0
-    endsw
+# Parse options before sourcing configuration or looking for proprietary tools.
+set VERBOSE = 0
+set SHOW_HELP = 0
+set PARSE_OPTIONS = 1
+set POSITIONAL = ()
+foreach argument ( $argv:q )
+    if ( $PARSE_OPTIONS ) then
+        switch ( "$argument" )
+            case -v:
+            case -verbose:
+            case --verbose:
+                set VERBOSE = 1
+                continue
+            case help:
+            case --help:
+            case -h:
+                set SHOW_HELP = 1
+                continue
+            case --:
+                set PARSE_OPTIONS = 0
+                continue
+            case -*:
+                echo "ERROR: unknown option: $argument"
+                echo "Run $0 -h for usage."
+                exit 2
+        endsw
+    endif
+    set POSITIONAL = ( $POSITIONAL:q "$argument" )
+end
+if ( $SHOW_HELP ) then
+    echo "Usage: $0 [-v|-verbose|--verbose] [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
+    echo ""
+    echo "  full                Convert Verilog, extract layout, then compare (default)."
+    echo "  compare             Compare previously generated source and layout SPICE."
+    echo "  v2cdl_compare       Regenerate source SPICE, reuse layout, then compare."
+    echo "  extraction_compare  Regenerate layout SPICE, reuse source, then compare."
+    echo "  -v, -verbose, --verbose  Also stream tool stdout/stderr to the terminal."
+    echo "  help, --help, -h    Show this help without loading config or running tools."
+    echo ""
+    echo "Options can appear before or after the mode/config; -- ends option parsing."
+    echo "Copy config.example.csh to config.local.csh and edit absolute paths."
+    echo "The optional config argument selects another trusted C-shell config."
+    echo "Full runs archive previous results as <run>.archive.YYYYMMDD_0, _1, etc. (local date)."
+    echo "Inspect stage log files and the final Calibre report for the LVS verdict."
+    exit 0
 endif
-set CONFIG = "$cwd/config.local.csh"
-if ( $#argv > 2 ) then
-    echo "Usage: $0 [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
+if ( $#POSITIONAL > 2 ) then
+    echo "ERROR: expected at most a mode and config path. Run $0 -h for usage."
     exit 2
 endif
-if ( $#argv == 2 ) set CONFIG = "$argv[2]"
-
+set CONFIG = "$cwd/config.local.csh"
+if ( $#POSITIONAL == 2 ) then
+    set CONFIG = "$POSITIONAL[2]"
+endif
 set MODE = full
-if ( $#argv > 0 ) then
-    set MODE = "$argv[1]"
+if ( $#POSITIONAL > 0 ) then
+    set MODE = "$POSITIONAL[1]"
 endif
 
 set RUN_V2CDL = 0
@@ -69,7 +86,8 @@ switch ( "$MODE" )
         breaksw
 
     default:
-        echo "Usage: $0 [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
+        echo "ERROR: unknown mode: $MODE. Run $0 -h for usage."
+        echo "Usage: $0 [-v|-verbose|--verbose] [full|compare|v2cdl_compare|extraction_compare] [config.csh]"
         exit 2
         breaksw
 endsw
@@ -134,6 +152,22 @@ if ( $RUN_V2CDL ) then
         exit 1
     endif
 endif
+# A small Bash helper mirrors logs without losing the tool's exit status.
+set SCRIPT_DIR = "`cd "$0:h" && pwd`"
+if ( $status != 0 ) exit 1
+set RUN_TOOL = "$SCRIPT_DIR/scripts/run_tool.sh"
+if ( ! -f "$RUN_TOOL" || ! -x "$RUN_TOOL" ) then
+    echo "ERROR: missing executable logging helper: $RUN_TOOL"
+    exit 1
+endif
+which bash >& /dev/null
+if ( $status != 0 ) then
+    echo "ERROR: bash is required by the logging helper"
+    exit 1
+endif
+set TOOL_OUTPUT = --quiet
+if ( $VERBOSE ) set TOOL_OUTPUT = --verbose
+
 mkdir -p "$STEP_DIR:h"
 if ( $status != 0 ) exit 1
 set LOCK = "${STEP_DIR}.lock"
@@ -145,15 +179,15 @@ endif
 onintr failed
 if ( "$MODE" == "full" ) then
     if ( -e "$STEP_DIR" ) then
-        set ARCHIVE_TIME = `date -u "+%Y%m%dT%H%M%SZ"`
+        set ARCHIVE_DATE = `date "+%Y%m%d"`
         if ( $status != 0 ) goto failed
-        set ARCHIVE_BASE = "${STEP_DIR}.archive.${ARCHIVE_TIME}"
-        set ARCHIVE = "$ARCHIVE_BASE"
+        set ARCHIVE_BASE = "${STEP_DIR}.archive.${ARCHIVE_DATE}"
         set ARCHIVE_INDEX = 0
-        # The run lock serializes archive creation; suffixes handle the same second.
+        set ARCHIVE = "${ARCHIVE_BASE}_${ARCHIVE_INDEX}"
+        # The run lock serializes creation; use the first available daily index.
         while ( -e "$ARCHIVE" || -l "$ARCHIVE" )
             @ ARCHIVE_INDEX ++
-            set ARCHIVE = "${ARCHIVE_BASE}.${ARCHIVE_INDEX}"
+            set ARCHIVE = "${ARCHIVE_BASE}_${ARCHIVE_INDEX}"
         end
         mkdir "$ARCHIVE"
         if ( $status != 0 ) goto failed
@@ -200,7 +234,7 @@ if ( $RUN_V2CDL ) then
     set start_time = `date "+%Y-%m-%d %H:%M:%S"`
     echo "start=$start_time" > timing
     if ( $status != 0 ) goto failed
-    v2lvs -v "$verilog" -o "$SOURCE_SPICE" -s "$V2LVS_SRC" -lsr "$V2LVS_SRC" $V2LVS_ARGS:q >& log
+    "$RUN_TOOL" $TOOL_OUTPUT log v2lvs -v "$verilog" -o "$SOURCE_SPICE" -s "$V2LVS_SRC" -lsr "$V2LVS_SRC" $V2LVS_ARGS:q
     if ( $status != 0 ) goto failed
     if ( ! -s "$SOURCE_SPICE" ) goto failed
 
@@ -233,7 +267,7 @@ if ( $RUN_EXTR ) then
     echo "start=$start_time" > timing
     if ( $status != 0 ) goto failed
 
-    calibre -lvs $CALIBRE_ARGS:q -spice "$LAYOUT_SPICE" "$EXTR_RULE" >& log
+    "$RUN_TOOL" $TOOL_OUTPUT log calibre -lvs $CALIBRE_ARGS:q -spice "$LAYOUT_SPICE" "$EXTR_RULE"
     set EXTR_STATUS = $status
     echo "exit_code=$EXTR_STATUS" >> timing
     if ( $status != 0 ) goto failed
@@ -288,10 +322,10 @@ if ( $RUN_COMP ) then
     if ( $status != 0 ) goto failed
 
     if ( $USE_HCELL ) then
-        calibre -lvs $CALIBRE_ARGS:q -hcell "$HCELL" "$COMP_RULE" >& log
+        "$RUN_TOOL" $TOOL_OUTPUT log calibre -lvs $CALIBRE_ARGS:q -hcell "$HCELL" "$COMP_RULE"
         if ( $status != 0 ) goto failed
     else
-        calibre -lvs $CALIBRE_ARGS:q "$COMP_RULE" >& log
+        "$RUN_TOOL" $TOOL_OUTPUT log calibre -lvs $CALIBRE_ARGS:q "$COMP_RULE"
         if ( $status != 0 ) goto failed
     endif
     set end_time = `date "+%Y-%m-%d %H:%M:%S"`

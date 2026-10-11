@@ -8,7 +8,7 @@ This is a Calibre runner, not a technology-independent LVS rule deck or a multi-
 
 ## Quick start
 
-Requirements: Linux/Unix, C-shell, standard Unix utilities, and an installed Calibre environment providing `calibre` and `v2lvs`.
+Requirements: Linux/Unix, C-shell, Bash (3.2 or newer), standard Unix utilities, and an installed Calibre environment providing `calibre` and `v2lvs`.
 
 ```sh
 cp config.example.csh config.local.csh
@@ -18,14 +18,23 @@ cp config.example.csh config.local.csh
 
 Run `./run_lvs.sh help` (also `--help` or `-h`) to see modes without a configuration or installed Calibre. The `run_lvs` symlink keeps the original command, including `./run_lvs help`, working.
 
-Use absolute paths in the configuration. `STEP_DIR` must be a dedicated output directory: a full run moves an existing directory into a unique sibling archive. Never set it to a source, project or PDK directory. The example places results under the ignored `runs/` directory. Archives have UTC timestamps, for example `example_top.archive.20260930T120000Z/run`. A repeat within the same second adds `.1`, `.2`, etc. before `/run`, preserving existing archives.
+Use absolute paths in the configuration. `STEP_DIR` must be a dedicated output directory: a full run moves an existing directory into a unique sibling archive. Never set it to a source, project or PDK directory. The example places results under the ignored `runs/` directory. Archives use the local date and a daily index, for example `example_top.archive.20261012_0/run`, then `example_top.archive.20261012_1/run`. The first available index is selected without overwriting existing directories or symlinks. Previous timestamped archives remain unchanged.
 
-The optional second argument selects another trusted C-shell configuration:
+The optional config argument selects another trusted C-shell configuration:
 
 ```sh
 ./run_lvs.sh full /absolute/path/to/project.local.csh
 ./run_lvs.sh compare /absolute/path/to/project.local.csh
 ```
+
+To see tool output in the terminal while also saving stage logs, add `-v` (`-verbose` or `--verbose`):
+
+```sh
+./run_lvs.sh -v full /absolute/path/to/project.local.csh
+./run_lvs.sh compare /absolute/path/to/project.local.csh -verbose
+```
+
+The flag can appear before or after the mode/configuration; `-v` alone runs the default `full` mode with `config.local.csh`. Use `--` to stop parsing options when needed.
 
 | Mode | Conversion | Extraction | Comparison |
 | --- | --- | --- | --- |
@@ -49,7 +58,7 @@ Decks must actually reference the intended inputs; the runner cannot rewrite or 
 
 ## Results and failures
 
-Each stage writes `log`, `timing`, and a `done` marker when its acceptance conditions are met. Logs are redirected directly to files so a logging pipeline cannot hide tool failures; use `tail -f` to watch them. Conversion requires a zero exit code and a nonempty CDL file. Comparison requires a zero exit code.
+Each stage writes `log`, `timing`, and a `done` marker when its acceptance conditions are met. By default, tool stdout and stderr are saved only to stage logs. With `-v`, a small Bash helper also streams the combined output to the terminal through `tee`, preserving the tool exit code (and reporting a logging failure if the tool succeeds). Output is displayed as the tool emits it; tool-side buffering can delay it. You can also use `tail -f` to watch the logs. Conversion requires a zero exit code and a nonempty CDL file. Comparison requires a zero exit code.
 
 Extraction has a separate policy: Calibre may produce the extracted SPICE and then fail because the extraction deck does not specify a source for comparison. By default, the runner continues to the separate compare stage if extraction produces a **fresh, readable, nonempty regular SPICE file**, even if Calibre exits nonzero. It removes the previous netlist before starting, prints a warning, and records `exit_code` in `extraction/timing` and `extraction/done`. Missing or empty output always fails, even with exit code zero.
 

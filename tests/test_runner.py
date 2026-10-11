@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import selectors
 import shutil
 import subprocess
 import tempfile
@@ -41,6 +42,8 @@ while [ "$#" -gt 0 ]; do
  shift
 done
 printf '%s\\n' "$stage" >> "$TRACE"
+printf '%s stdout\\n' "$stage"
+printf '%s stderr\\n' "$stage" >&2
 [ "$FAIL_STAGE" = "$stage" ] && exit 7
 if [ -n "$out" ] && [ "$EMPTY_STAGE" != "$stage" ]; then printf 'netlist\\n' > "$out"; fi
 [ "$FAIL_AFTER_OUTPUT" = "$stage" ] && exit 7
@@ -49,8 +52,8 @@ exit 0
             f.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{self.root}:' + os.environ['PATH'], TRACE=str(self.trace))
 
-    def run_mode(self, mode='full', **env):
-        return subprocess.run(['csh', '-f', str(RUNNER), mode, str(self.config)],
+    def run_mode(self, mode='full', options=(), **env):
+        return subprocess.run(['csh', '-f', str(RUNNER), *options, mode, str(self.config)],
                               cwd=self.root, env=dict(self.env, **env), text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
@@ -90,9 +93,9 @@ exit 0
         self.assertFalse((self.out / 'v2cdl/done').exists())
 
     def test_archives_do_not_collide(self):
-        # Force equal timestamps to exercise collision handling deterministically.
+        # Force equal dates to exercise the daily counter deterministically.
         date = self.root / 'date'
-        date.write_text('#!/bin/sh\necho 20260930T120000Z\n')
+        date.write_text('#!/bin/sh\necho 20261012\n')
         date.chmod(0o755)
         self.successful()
         self.successful()
@@ -100,7 +103,7 @@ exit 0
         archives = list(self.root.glob('results.archive.*'))
         self.assertEqual(len(archives), 2)
         self.assertEqual({p.name for p in archives}, {
-            'results.archive.20260930T120000Z', 'results.archive.20260930T120000Z.1'})
+            'results.archive.20261012_0', 'results.archive.20261012_1'})
         self.assertTrue(all((p / 'run/compare/done').exists() for p in archives))
 
     def test_missing_input_preserves_previous_run(self):
@@ -179,11 +182,115 @@ exit 0
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.out / stage / 'done').exists())
 
-    def test_archive_timestamp_format(self):
+    def test_archive_date_format(self):
         self.successful()
         self.successful()
         archive, = self.root.glob('results.archive.*')
-        self.assertRegex(archive.name, r'^results\.archive\.\d{8}T\d{6}Z$')
+        self.assertRegex(archive.name, r'^results\.archive\.\d{8}_0$')
+
+    def test_archive_index_skips_existing_directory_and_symlink(self):
+        date = self.root / 'date'
+        date.write_text('#!/bin/sh\necho 20261012\n')
+        date.chmod(0o755)
+        first = self.root / 'results.archive.20261012_0'
+        first.mkdir()
+        (first / 'keep').write_text('preserved')
+        second = self.root / 'results.archive.20261012_1'
+        second.symlink_to(self.root / 'nonexistent')
+        self.successful()
+        self.successful()
+        self.assertEqual((first / 'keep').read_text(), 'preserved')
+        self.assertTrue(second.is_symlink())
+        self.assertTrue((self.root / 'results.archive.20261012_2/run/compare/done').exists())
+
+    def test_quiet_mode_saves_stdout_and_stderr_without_echoing(self):
+        result = self.run_mode()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for stage in ('v2cdl', 'extraction', 'compare'):
+            log = (self.out / stage / 'log').read_text()
+            for stream in ('stdout', 'stderr'):
+                message = f'{stage} {stream}'
+                self.assertIn(message, log)
+                self.assertNotIn(message, result.stdout)
+
+    def test_verbose_flags_show_and_save_all_tool_output(self):
+        for flag in ('-v', '-verbose', '--verbose'):
+            with self.subTest(flag=flag):
+                result = self.run_mode(options=(flag,))
+                self.assertEqual(result.returncode, 0, result.stdout)
+                for stage in ('v2cdl', 'extraction', 'compare'):
+                    log = (self.out / stage / 'log').read_text()
+                    for stream in ('stdout', 'stderr'):
+                        self.assertIn(f'{stage} {stream}', result.stdout)
+                        self.assertIn(f'{stage} {stream}', log)
+
+    def test_verbose_flag_after_config_and_default_mode(self):
+        for arguments in (
+                ['full', str(self.config), '-v'],
+                ['-v', 'full', str(self.config)],
+                ['full', '-v', str(self.config)],
+                ['-v']):
+            with self.subTest(arguments=arguments):
+                shutil.copyfile(self.config, self.root / 'config.local.csh')
+                result = subprocess.run(
+                    [str(RUNNER), *arguments], cwd=self.root, env=self.env, text=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn('compare stderr', result.stdout)
+
+    def test_verbose_failures_are_not_hidden_by_logging(self):
+        for stage in ('v2cdl', 'extraction', 'compare'):
+            with self.subTest(stage=stage):
+                result = self.run_mode(options=('-v',), FAIL_STAGE=stage)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'{stage} stderr', result.stdout)
+                self.assertFalse((self.out / 'compare/done').exists())
+        result = self.run_mode(options=('-v',), FAIL_AFTER_OUTPUT='extraction')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('WARNING: extraction exited with code 7', result.stdout)
+        self.assertIn('compare stderr', result.stdout)
+        self.assertIn('exit_code=7', (self.out / 'extraction/done').read_text())
+
+    def test_unknown_option_fails_before_loading_config(self):
+        self.config.write_text('echo CONFIG_WAS_EXECUTED\nexit 99\n')
+        result = self.run_mode(options=('--typo',))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('unknown option', result.stdout)
+        self.assertNotIn('CONFIG_WAS_EXECUTED', result.stdout)
+
+    def test_verbose_output_is_live_while_tool_is_running(self):
+        # A gate blocks conversion until its first output reaches the parent.
+        # This distinguishes streaming from printing a completed log afterward.
+        gate = self.root / 'continue'
+        tool = self.root / 'v2lvs'
+        original = tool.read_text()
+        tool.write_text(original.replace('out=\n', '''printf 'STREAM_READY\\n'
+while [ ! -f "$STREAM_GATE" ]; do sleep 0.05; done
+out=
+'''))
+        process = subprocess.Popen(
+            [str(RUNNER), '-v', 'full', str(self.config)], cwd=self.root,
+            env=dict(self.env, STREAM_GATE=str(gate)),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                captured = b''
+                while b'STREAM_READY\n' not in captured:
+                    self.assertTrue(selector.select(timeout=10), 'Tool output did not stream')
+                    chunk = os.read(process.stdout.fileno(), 4096)
+                    self.assertTrue(chunk, captured.decode())
+                    captured += chunk
+                self.assertIsNone(process.poll(), 'Run finished before the gate was released')
+            gate.touch()
+            remaining, _ = process.communicate(timeout=15)
+            self.assertEqual(process.returncode, 0, (captured + remaining).decode())
+            self.assertIn('STREAM_READY', (self.out / 'v2cdl/log').read_text())
+        finally:
+            gate.touch()
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=15)
 
 if __name__ == '__main__':
     unittest.main()
